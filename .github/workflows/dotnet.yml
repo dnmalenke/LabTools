@@ -19,7 +19,7 @@ jobs:
       run: dotnet restore
     # publishes Blazor project to the release-folder
     - name: Publish .NET Core Project
-      run: dotnet publish LabTools.csproj -c Release -o release
+      run: dotnet publish ./LabTools/LabTools.csproj -c Release -o release
       
     - name: Commit wwwroot to GitHub Pages
       uses: JamesIves/github-pages-deploy-action@3.7.1
