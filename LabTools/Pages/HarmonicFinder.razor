@@ -1,0 +1,164 @@
+﻿@page "/harmonics"
+
+@using GGNet
+@using GGNet.Components
+
+<h3>Harmonic Finder</h3>
+
+<div class="col-12">
+    <label class="btn btn-light d-inline-block">
+        <InputFile style="display:none;" OnChange="OnFileUpload"></InputFile>
+        <span class="oi oi-cloud-upload" /> Select FFT CSV file
+    </label>
+</div>
+
+
+@if (_data != null)
+{
+    @if (_harmonics.Any())
+    {
+        <div class="col-12 my-4">
+            <table class="table-bordered">
+                <tbody>
+                    <tr>
+                        <th>Include in Calculations?</th>
+                        @{
+                            int i = 0;
+                            foreach (var harmonic in _harmonics)
+                            {
+                                <td style="text-align:center">
+                                    <input style="height: 1.5em; width: 1.5em; vertical-align: middle;" type="checkbox" checked @bind-value="harmonic.IncludeInCalculation" disabled="@(i++ < 2 ? true : false)" />
+                                </td>
+                            }
+                        }
+                    </tr>
+                    <tr>
+                        <th>Frequency:</th>
+                        @foreach (var measurement in _harmonics.Select(h => h.Frequency))
+                        {
+                            <td>@(measurement >= 1000 ? Math.Round(measurement / 1000.0, 3) + "kHz" : Math.Round(measurement,3) + "Hz")</td>
+                        }
+                    </tr>
+                    <tr>
+                        <th>dBV:</th>
+                        @foreach (var measurement in _harmonics.Select(h => h.Decibels))
+                        {
+                            <td>@(Math.Round(measurement,3)) dBV</td>
+                        }
+                    </tr>
+                    <tr>
+                        <th>THD:</th>
+                        <td colspan="@_harmonics.Count">@Math.Round(GetTHD(),3)%</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    }
+    <div class="col-12">
+        <Plot Data=@_data T="FFTPoint" TX="double" TY="double" RenderPolicy="RenderPolicy.Auto" @ref="@_plot" />
+    </div>
+
+}
+
+@code {
+
+    private Data<FFTPoint, double, double>? _data;
+    private Plot<FFTPoint, double, double>? _plot;
+    private List<FFTPoint> _dataSet = new();
+    private List<FFTPoint> _harmonics = new();
+
+    private async Task OnFileUpload(InputFileChangeEventArgs e)
+    {
+        _dataSet.Clear();
+
+        byte[] data = new byte[e.File.Size];
+        using (var s = e.File.OpenReadStream())
+        {
+            await s.ReadAsync(data, 0, (int)e.File.Size);
+        }
+
+        var str = System.Text.Encoding.Default.GetString(data);
+        var location = str.IndexOf("x-axis,FFT\n");
+        str = str.Remove(0, location);
+        var lines = str.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var line in lines.Skip(2))
+        {
+            string[]? splitLine = null;
+            try
+            {
+                splitLine = line.Split(',');
+                double col1 = double.Parse(splitLine[0]);
+                double col2 = double.Parse(splitLine[1]);
+                var newPoint = new FFTPoint { Decibels = col2, Frequency = col1 };
+                _dataSet.Add(newPoint);
+            }
+            catch
+            {
+                Console.Write("Error: ");
+                if (splitLine != null && splitLine.Length == 2)
+                {
+                    Console.WriteLine(splitLine[0]);
+                    Console.WriteLine(splitLine[1]);
+                }
+            }
+        }
+
+        _data = Plot.New(_dataSet, x: o => o.Frequency, y: o => o.Decibels)
+           .Geom_Line(width: 1.0, tooltip: o => $"{o.Frequency}Hz : {o.Decibels} dBV")
+           .Title("FFT Data")
+           .YLab("dBV")
+           .XLab("Frequency")
+           .Theme(dark: false, legend: Position.Bottom);
+
+        await ProcessData();
+    }
+
+    private double GetTHD() => _harmonics.Count > 2 ? (Math.Sqrt(_harmonics.Skip(1).Where(h => h.IncludeInCalculation).Select(h => Math.Pow(10, (h.Decibels / 10.0))).Sum()) / Math.Pow(10,(_harmonics[0].Decibels/20))) * 100 : 0;
+
+    private async Task ProcessData()
+    {
+        FFTPoint? fundamental = _dataSet.MaxBy(p => p.Decibels);
+
+        if (fundamental == null)
+        {
+            return;
+        }
+
+        _harmonics = new();
+        FFTPoint lastPoint = fundamental;
+
+        for (var i = 2; i <= 10; i++)
+        {
+            double rangeCenter = lastPoint.Frequency + fundamental.Frequency;
+
+            FFTPoint? foundPoint = _dataSet.Where(p => p.Frequency > rangeCenter - 200 && p.Frequency < rangeCenter + 200).MaxBy(p => p.Decibels);
+            if (foundPoint != null)
+            {
+                _harmonics.Add(foundPoint);
+                lastPoint = foundPoint;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        _harmonics.Insert(0, fundamental);
+
+        double? minDecibels = _dataSet.MinBy(p => p.Decibels)?.Decibels;
+        _data = null;
+        await InvokeAsync(StateHasChanged);
+        await Task.Delay(1);
+        _data = Plot.New(new Source<FFTPoint>(_dataSet), x: o => o.Frequency, y: o => o.Decibels)
+        .Geom_Line(width: 1.0, tooltip: o => $"{o.Frequency}Hz : {o.Decibels} dBV")
+        .Geom_Text(_harmonics, x: p => p.Frequency + 400, y: p => p.Decibels + 7, text: p => $"{Math.Round(p.Decibels, 3)} dBV @ {p.Frequency}Hz", size: new Size(.5, Units.em), angle: 320)
+        .YLab("dBV")
+        .XLab("Frequency")
+        .YLim(minDecibels, fundamental.Decibels + 20)
+        .Theme(dark: false, legend: Position.Bottom);
+
+
+        await InvokeAsync(StateHasChanged);
+    }
+}
